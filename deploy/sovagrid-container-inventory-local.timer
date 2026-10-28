@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh SovaGrid local Agent read-only container inventory
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=sovagrid-container-inventory-local.service
+
+[Install]
+WantedBy=timers.target

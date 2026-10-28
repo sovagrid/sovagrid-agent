@@ -1,0 +1,28 @@
+[Unit]
+Description=SovaGrid isolated read-only journal reader
+Requires=sovagrid-journal-control.socket
+After=sovagrid-journal-control.socket
+
+[Service]
+Type=simple
+User=sovagrid-journal
+Group=sovagrid-journal
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/opt/sovagrid-agent
+ExecStart=/usr/bin/python3 -m sovagrid_agent.journal_broker
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+TasksMax=16
+MemoryMax=128M
+KillMode=control-group

@@ -1,0 +1,13 @@
+[Unit]
+Description=SovaGrid isolated journal reader socket
+
+[Socket]
+ListenStream=/run/sovagrid-journal/control.sock
+SocketUser=sovagrid
+SocketMode=0600
+DirectoryMode=0755
+RemoveOnStop=true
+Service=sovagrid-journal-control.service
+
+[Install]
+WantedBy=sockets.target

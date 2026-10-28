@@ -1,0 +1,28 @@
+[Unit]
+Description=SovaGrid Linux Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sovagrid
+Group=sovagrid
+WorkingDirectory=/opt/sovagrid-agent
+ExecStart=/usr/bin/python3 -m sovagrid_agent --config /etc/sovagrid/agent.json --enable-quiescence
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+LimitCORE=0
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sovagrid-agent /run/sovagrid-agent-control
+RuntimeDirectory=sovagrid-agent-control
+RuntimeDirectoryMode=0700
+CapabilityBoundingSet=
+TasksMax=64
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

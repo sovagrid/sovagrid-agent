@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jigokuraku01
+# Additional author attribution terms: see ATTRIBUTION.md.
+[Unit]
+Description=SovaGrid local-Hub terminal PTY broker
+Requires=sovagrid-terminal-local-control.socket
+After=sovagrid-terminal-local-control.socket
+
+[Service]
+Type=simple
+User=sovagrid-local-shell
+Group=sovagrid-local-shell
+WorkingDirectory=/opt/sovagrid-agent-local
+ExecStart=/usr/bin/python3 -m sovagrid_agent.terminal_broker --local
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/sovagrid-local-shell
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+TasksMax=64
+MemoryMax=256M
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

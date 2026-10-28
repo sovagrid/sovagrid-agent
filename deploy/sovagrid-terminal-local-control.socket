@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jigokuraku01
+# Additional author attribution terms: see ATTRIBUTION.md.
+[Unit]
+Description=SovaGrid local-Hub terminal PTY broker socket
+
+[Socket]
+ListenStream=/run/sovagrid-terminal-local/control.sock
+SocketUser=root
+SocketGroup=sovagrid-local
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=true
+Service=sovagrid-terminal-local-control.service
+
+[Install]
+WantedBy=sockets.target

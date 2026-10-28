@@ -1,0 +1,13 @@
+[Unit]
+Description=SovaGrid allowed systemd service control socket
+
+[Socket]
+ListenStream=/run/sovagrid-service/control.sock
+SocketUser=sovagrid
+SocketMode=0600
+DirectoryMode=0755
+RemoveOnStop=true
+Service=sovagrid-service-control.service
+
+[Install]
+WantedBy=sockets.target

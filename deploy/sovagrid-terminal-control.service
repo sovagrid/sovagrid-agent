@@ -1,0 +1,30 @@
+[Unit]
+Description=SovaGrid terminal PTY broker
+Requires=sovagrid-terminal-control.socket
+After=sovagrid-terminal-control.socket
+
+[Service]
+Type=simple
+User=sovagrid-shell
+Group=sovagrid-shell
+WorkingDirectory=/opt/sovagrid-agent
+ExecStart=/usr/bin/python3 -m sovagrid_agent.terminal_broker
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/sovagrid-shell
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+TasksMax=64
+MemoryMax=256M
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

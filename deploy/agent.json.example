@@ -1,0 +1,11 @@
+{
+  "hub_url": "https://sovagrid.example.com",
+  "server_id": "00000000-0000-0000-0000-000000000000",
+  "token_file": "/etc/sovagrid/agent.token",
+  "interval_seconds": 30,
+  "allow_remote_commands": false,
+  "allow_systemd_journal": false,
+  "journal_units": [],
+  "allow_file_manager": false,
+  "file_roots": {}
+}

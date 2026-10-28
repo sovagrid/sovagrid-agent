@@ -1,0 +1,27 @@
+[Unit]
+Description=SovaGrid local Agent restricted systemd service controller
+Requires=sovagrid-service-local-control.socket
+After=sovagrid-service-local-control.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/sovagrid-agent-local
+ExecStart=/usr/bin/python3 -B -E -S -m sovagrid_agent.service_broker
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+TasksMax=16
+MemoryMax=128M
+KillMode=control-group

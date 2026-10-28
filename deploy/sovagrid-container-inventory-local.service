@@ -1,0 +1,30 @@
+[Unit]
+Description=SovaGrid local Agent read-only container inventory
+Documentation=https://github.com/sovagrid/sovagrid-agent
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=sovagrid-local
+SupplementaryGroups=docker
+ExecStart=/usr/bin/python3 -m sovagrid_agent.container_collector --local
+WorkingDirectory=/opt/sovagrid-agent-local
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sovagrid-containers-local
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryMax=96M
+TasksMax=16
+TimeoutStartSec=30
