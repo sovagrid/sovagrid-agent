@@ -35,11 +35,12 @@ def _protect_agent_process() -> None:
         raise RuntimeError("Agent process hardening failed") from exc
 
 
-def _run(args, *, trial_mode: bool = False) -> None:
-    config = load_config(args.config)
+def _run(args, *, trial_mode: bool = False, gate=None) -> None:
+    normal_config = load_config(args.config)
+    config = normal_config
     if trial_mode:
-        # A trial Agent proves health only. In particular it must never claim
-        # work during the short heartbeat gap after a root supervisor dies.
+        # A trial Agent proves Hub metrics only. The post-PROMOTE proof also
+        # uses this configuration; no job or check may run before RELEASE.
         config = {**config, "allow_remote_commands": False,
                   "allow_interactive_terminal": False,
                   "allow_file_manager": False,
@@ -51,24 +52,61 @@ def _run(args, *, trial_mode: bool = False) -> None:
         return
     quiescence = AgentQuiescence()
     control = AgentQuiescenceServer(quiescence).start() if args.enable_quiescence else None
-    if config.get("allow_remote_commands", False) and config.get("allow_interactive_terminal", False):
-        if os.geteuid() == 0:
-            raise PermissionError("Terminal poller must not run as root")
-        threading.Thread(target=terminal_loop, args=(config, client, quiescence), daemon=True,
-                         name="sovagrid-terminal-poller").start()
-    if config.get("allow_remote_commands", False) and config.get("allow_file_manager", False):
-        if os.geteuid() == 0:
-            raise PermissionError("File poller must not run as root")
-        threading.Thread(target=file_loop, args=(config, client, quiescence), daemon=True,
-                         name="sovagrid-file-poller").start()
-    checks = None if trial_mode else CheckWorkers(config, client.token,
-                                                  quiescence=quiescence).start()
+    checks = None
+    dispatch_started = False
+    dispatch_prepared = False
+    prepared_threads = []
+    prepared_checks = None
+
+    def prepare_dispatch() -> None:
+        nonlocal dispatch_prepared, prepared_checks
+        if dispatch_prepared:
+            return
+        # Build the normal worker objects while all dispatch remains off.
+        # Their constructors do not claim Hub jobs or run network checks.
+        if normal_config.get("allow_remote_commands", False) and normal_config.get("allow_interactive_terminal", False):
+            if os.geteuid() == 0:
+                raise PermissionError("Terminal poller must not run as root")
+            prepared_threads.append(threading.Thread(
+                target=terminal_loop, args=(normal_config, client, quiescence), daemon=True,
+                name="sovagrid-terminal-poller"))
+        if normal_config.get("allow_remote_commands", False) and normal_config.get("allow_file_manager", False):
+            if os.geteuid() == 0:
+                raise PermissionError("File poller must not run as root")
+            prepared_threads.append(threading.Thread(
+                target=file_loop, args=(normal_config, client, quiescence), daemon=True,
+                name="sovagrid-file-poller"))
+        prepared_checks = CheckWorkers(normal_config, client.token, quiescence=quiescence)
+        dispatch_prepared = True
+
+    def start_dispatch() -> None:
+        nonlocal checks, dispatch_started, config
+        # This is called only after the Agent has sent ACK RELEASE to the
+        # root supervisor. At that point the new source is durably committed.
+        prepare_dispatch()
+        config = normal_config
+        for thread in prepared_threads:
+            thread.start()
+        checks = prepared_checks.start()
+        dispatch_started = True
+
     try:
+        if not trial_mode:
+            start_dispatch()
         failures = 0
         while True:
+            if trial_mode and gate is not None and gate.released.is_set() and not dispatch_started:
+                start_dispatch()
+            promote_cycle = (trial_mode and gate is not None and
+                             gate.promotion_requested.is_set() and
+                             not gate.promotion_ready.is_set() and not gate.released.is_set())
+            if promote_cycle:
+                prepare_dispatch()
             started = time.monotonic()
             try:
                 run_once(config, client, quiescence)
+                if promote_cycle:
+                    gate.mark_ready()
                 failures = 0
             except KeyboardInterrupt:
                 return
@@ -79,7 +117,11 @@ def _run(args, *, trial_mode: bool = False) -> None:
             interval = float(config.get("interval_seconds", 30))
             delay = min(300, interval * 2 ** min(failures, 4)) if failures else interval
             try:
-                time.sleep(max(0, delay - (time.monotonic() - started)))
+                remaining = max(0, delay - (time.monotonic() - started))
+                if trial_mode and gate is not None and not dispatch_started:
+                    gate.wait(remaining)
+                else:
+                    time.sleep(remaining)
             except KeyboardInterrupt:
                 return
     finally:
@@ -101,7 +143,7 @@ def main(argv=None):
     if gate is not None:
         gate.start()
     try:
-        _run(args, trial_mode=gate is not None)
+        _run(args, trial_mode=gate is not None, gate=gate)
     finally:
         if gate is not None:
             gate.stop()

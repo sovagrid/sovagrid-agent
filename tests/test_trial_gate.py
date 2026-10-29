@@ -19,6 +19,7 @@ from sovagrid_agent import trial_gate
 
 
 EPOCH = "a" * 32
+NONCE = "b" * 32
 
 
 def read_line(connection):
@@ -134,6 +135,91 @@ class TrialGateTests(unittest.TestCase):
                 server.join(1)
                 listener.close()
 
+    def test_nonce_bound_promotion_releases_only_after_read_only_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "gate.sock")
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(path)
+            listener.listen(1)
+            seen = []
+            fatal = mock.Mock()
+
+            def supervisor():
+                with listener.accept()[0] as connection:
+                    seen.append(read_line(connection))
+                    connection.sendall(f"READY 1 {EPOCH}\n".encode())
+                    seen.append(read_line(connection))
+                    connection.sendall(b"PONG 0\n")
+                    while True:
+                        request = read_line(connection)
+                        seen.append(request)
+                        parts = request.strip().split()
+                        sequence = parts[1]
+                        if sequence == b"1":
+                            connection.sendall(b"PROMOTE 1 " + NONCE.encode() + b"\n")
+                        elif len(parts) == 4 and parts[2:] == [b"READY", NONCE.encode()]:
+                            connection.sendall(b"RELEASE " + sequence + b" " + NONCE.encode() + b"\n")
+                            seen.append(read_line(connection))
+                            return
+                        else:
+                            connection.sendall(b"PONG " + sequence + b"\n")
+
+            server = threading.Thread(target=supervisor)
+            server.start()
+            try:
+                with mock.patch.object(trial_gate, "_trusted_path"), mock.patch.object(
+                        trial_gate, "_trusted_peer"), mock.patch.object(
+                        trial_gate, "HEARTBEAT_SECONDS", 0.02), mock.patch.object(
+                        trial_gate, "ROUND_TRIP_SECONDS", 0.3):
+                    gate = trial_gate.ExternalTrialGate(EPOCH, path=path, fatal=fatal).start()
+                    self.assertTrue(gate.promotion_requested.wait(1))
+                    self.assertFalse(gate.promotion_ready.is_set())
+                    self.assertFalse(gate.released.is_set())
+                    gate.mark_ready()
+                    self.assertTrue(gate.released.wait(1))
+                    gate.stop()
+            finally:
+                server.join(1)
+                listener.close()
+            self.assertEqual(seen[0], f"HELLO 1 {EPOCH}\n".encode())
+            self.assertIn(b"PING 1\n", seen)
+            self.assertTrue(any(item.endswith(b" READY " + NONCE.encode() + b"\n") for item in seen))
+            self.assertEqual(seen[-1], b"ACK RELEASE " + NONCE.encode() + b"\n")
+            fatal.assert_not_called()
+
+    def test_release_before_metrics_ready_is_fatal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "gate.sock")
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(path)
+            listener.listen(1)
+            fatal = threading.Event()
+
+            def supervisor():
+                with listener.accept()[0] as connection:
+                    self.assertEqual(read_line(connection), f"HELLO 1 {EPOCH}\n".encode())
+                    connection.sendall(f"READY 1 {EPOCH}\n".encode())
+                    self.assertEqual(read_line(connection), b"PING 0\n")
+                    connection.sendall(b"PONG 0\n")
+                    self.assertEqual(read_line(connection), b"PING 1\n")
+                    connection.sendall(b"RELEASE 1 " + NONCE.encode() + b"\n")
+
+            server = threading.Thread(target=supervisor)
+            server.start()
+            try:
+                with mock.patch.object(trial_gate, "_trusted_path"), mock.patch.object(
+                        trial_gate, "_trusted_peer"), mock.patch.object(
+                        trial_gate, "HEARTBEAT_SECONDS", 0.02), mock.patch.object(
+                        trial_gate, "ROUND_TRIP_SECONDS", 0.3):
+                    gate = trial_gate.ExternalTrialGate(EPOCH, path=path,
+                                                        fatal=lambda _code: fatal.set()).start()
+                    self.assertTrue(fatal.wait(1))
+                    self.assertFalse(gate.released.is_set())
+                    gate.stop()
+            finally:
+                server.join(1)
+                listener.close()
+
     def test_missing_or_failed_gate_never_constructs_hub_client(self):
         from sovagrid_agent.__main__ import main
         gate = mock.Mock()
@@ -168,6 +254,9 @@ class TrialGateTests(unittest.TestCase):
                   "interval_seconds": 5}
         gate = mock.Mock()
         gate.start.side_effect = lambda: order.append("gate")
+        gate.released.is_set.return_value = False
+        gate.promotion_requested.is_set.return_value = False
+        gate.promotion_ready.is_set.return_value = False
         def load(_path):
             order.append("config")
             return config
@@ -203,6 +292,87 @@ class TrialGateTests(unittest.TestCase):
             run_once({"allow_remote_commands": False}, client)
         client.push_metrics.assert_called_once()
         client.next_job.assert_not_called()
+
+    def test_in_process_promotion_keeps_dispatch_off_until_release_ack(self):
+        from sovagrid_agent.__main__ import main
+
+        class Gate:
+            promotion_requested = threading.Event()
+            promotion_ready = threading.Event()
+            released = threading.Event()
+
+            def start(self):
+                return self
+
+            def mark_ready(self):
+                self.promotion_ready.set()
+                self.released.set()  # Simulates a later authenticated RELEASE ACK.
+
+            def wait(self, _seconds):
+                self.promotion_requested.set()
+
+            def stop(self):
+                pass
+
+        gate = Gate()
+        normal = {"token_file": "/test/token", "allow_remote_commands": True,
+                  "allow_interactive_terminal": True, "allow_file_manager": True,
+                  "allow_systemd_journal": True, "interval_seconds": 5}
+        cycles = []
+
+        def once(effective, _client, _quiescence):
+            cycles.append(effective.copy())
+            if len(cycles) == 2:
+                workers.assert_called_once()
+                workers.return_value.start.assert_not_called()
+                thread.return_value.start.assert_not_called()
+            if len(cycles) == 3:
+                raise KeyboardInterrupt
+
+        with mock.patch("sovagrid_agent.__main__._protect_agent_process"), mock.patch(
+                "sovagrid_agent.__main__.external_trial_gate_from_environment", return_value=gate), mock.patch(
+                "sovagrid_agent.__main__.load_config", return_value=normal), mock.patch(
+                "sovagrid_agent.__main__.read_token", return_value="token"), mock.patch(
+                "sovagrid_agent.__main__.HubClient", return_value=mock.Mock(token="token")), mock.patch(
+                "sovagrid_agent.__main__.run_once", side_effect=once), mock.patch(
+                "sovagrid_agent.__main__.CheckWorkers") as workers, mock.patch(
+                "sovagrid_agent.__main__.terminal_loop") as terminal, mock.patch(
+                "sovagrid_agent.__main__.file_loop") as files, mock.patch(
+                "sovagrid_agent.__main__.threading.Thread") as thread:
+            thread.return_value.start.return_value = None
+            main([])
+        self.assertEqual(len(cycles), 3)
+        self.assertFalse(cycles[0]["allow_remote_commands"])
+        self.assertFalse(cycles[1]["allow_remote_commands"])
+        self.assertTrue(cycles[2]["allow_remote_commands"])
+        workers.assert_called_once()
+        workers.return_value.start.assert_called_once()
+        self.assertEqual(thread.call_count, 2)
+        self.assertEqual(thread.return_value.start.call_count, 2)
+        terminal.assert_not_called()
+        files.assert_not_called()
+
+    def test_post_release_worker_start_failure_exits_for_systemd_restart(self):
+        from sovagrid_agent.__main__ import main
+
+        gate = mock.Mock()
+        gate.released.is_set.return_value = True
+        gate.promotion_requested.is_set.return_value = True
+        gate.promotion_ready.is_set.return_value = True
+        config = {"token_file": "/test/token", "allow_remote_commands": False,
+                  "interval_seconds": 5}
+        with mock.patch("sovagrid_agent.__main__._protect_agent_process"), mock.patch(
+                "sovagrid_agent.__main__.external_trial_gate_from_environment", return_value=gate), mock.patch(
+                "sovagrid_agent.__main__.load_config", return_value=config), mock.patch(
+                "sovagrid_agent.__main__.read_token", return_value="token"), mock.patch(
+                "sovagrid_agent.__main__.HubClient", return_value=mock.Mock(token="token")), mock.patch(
+                "sovagrid_agent.__main__.CheckWorkers") as workers, mock.patch(
+                "sovagrid_agent.__main__.run_once") as once:
+            workers.return_value.start.side_effect = RuntimeError("worker could not start")
+            with self.assertRaisesRegex(RuntimeError, "worker could not start"):
+                main([])
+        once.assert_not_called()
+        gate.stop.assert_called_once()
 
     def test_journal_enabled_host_can_report_metrics_during_trial(self):
         from sovagrid_agent.__main__ import main

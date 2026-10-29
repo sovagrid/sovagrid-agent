@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Jigokuraku01
 # Additional author attribution terms: see ATTRIBUTION.md.
-"""Fail-closed Agent-side guard for a future external-Agent update trial.
+"""Fail-closed Agent-side guard for an external-Agent update trial.
 
 The root updater owns the server socket and trial epoch. A systemd drop-in
 opts the new Agent into this guard. The Agent itself completes a live round
@@ -74,11 +74,13 @@ def _trusted_peer(connection: socket.socket) -> None:
 
 
 class ExternalTrialGate:
-    """Require a root supervisor's live approval for the whole trial.
+    """Require a root supervisor's live approval until durable RELEASE.
 
     The supervisor must reply to each challenge within three seconds and must
     terminate its own lease at or before 900 seconds. The Agent independently
-    exits after 900 seconds even if a faulty supervisor keeps replying.
+    exits after 900 seconds even if a faulty supervisor keeps replying. PROMOTE
+    permits only another read-only Hub cycle; RELEASE after READY is the sole
+    transition that permits the same process to start normal dispatch.
     """
 
     def __init__(self, epoch: str, *, path: str = SOCKET_PATH,
@@ -92,13 +94,54 @@ class ExternalTrialGate:
         self._watcher: threading.Thread | None = None
         self._stopping = threading.Event()
         self._started: float | None = None
+        self.promotion_requested = threading.Event()
+        self.promotion_ready = threading.Event()
+        self.released = threading.Event()
+        self._transition = threading.Event()
+        self._promotion_nonce: str | None = None
 
     def _challenge(self, sequence: int) -> None:
-        assert self._connection is not None
-        self._connection.sendall(f"PING {sequence}\n".encode("ascii"))
+        connection = self._connection
+        if connection is None:
+            raise RuntimeError("External trial gate connection is unavailable")
+        suffix = (f" READY {self._promotion_nonce}"
+                  if self.promotion_ready.is_set() and self._promotion_nonce is not None else "")
+        connection.sendall(f"PING {sequence}{suffix}\n".encode("ascii"))
         expected = f"PONG {sequence}\n".encode("ascii")
-        if _line(self._connection, time.monotonic() + ROUND_TRIP_SECONDS) != expected:
+        response = _line(connection, time.monotonic() + ROUND_TRIP_SECONDS)
+        if response == expected:
+            return
+        try:
+            command, received_sequence, nonce = response.decode("ascii").strip().split(" ")
+        except (UnicodeDecodeError, ValueError):
+            raise RuntimeError("External trial gate challenge failed") from None
+        if received_sequence != str(sequence) or EPOCH.fullmatch(nonce) is None:
             raise RuntimeError("External trial gate challenge failed")
+        if command == "PROMOTE" and self._promotion_nonce is None and not self.released.is_set():
+            self._promotion_nonce = nonce
+            self.promotion_requested.set()
+            self._transition.set()
+            return
+        if command == "RELEASE" and self.promotion_ready.is_set() and nonce == self._promotion_nonce:
+            connection.sendall(f"ACK RELEASE {nonce}\n".encode("ascii"))
+            self.released.set()
+            self._transition.set()
+            self._stopping.set()
+            return
+        raise RuntimeError("External trial gate challenge failed")
+
+    def mark_ready(self) -> None:
+        """Report a successful post-PROMOTE, metrics-only Hub cycle."""
+        if not self.promotion_requested.is_set() or self._promotion_nonce is None or \
+                self.released.is_set() or self._stopping.is_set():
+            raise RuntimeError("External trial promotion is unavailable")
+        self.promotion_ready.set()
+        self._transition.set()
+
+    def wait(self, timeout: float) -> None:
+        """Wake the Agent's normal interval on a promotion or release."""
+        self._transition.wait(timeout)
+        self._transition.clear()
 
     def start(self) -> "ExternalTrialGate":
         _trusted_path(self.path)
@@ -137,6 +180,7 @@ class ExternalTrialGate:
                     # systemd's default control-group kill policy then tears
                     # down helper children. A normal Python exception in this
                     # daemon thread would leave the Agent running unguarded.
+                    self._stopping.set()
                     self._fatal(70)
                 return
             sequence += 1
