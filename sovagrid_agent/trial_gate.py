@@ -74,13 +74,14 @@ def _trusted_peer(connection: socket.socket) -> None:
 
 
 class ExternalTrialGate:
-    """Require a root supervisor's live approval until durable RELEASE.
+    """Require a root supervisor until post-release dispatch is acknowledged.
 
     The supervisor must reply to each challenge within three seconds and must
     terminate its own lease at or before 900 seconds. The Agent independently
     exits after 900 seconds even if a faulty supervisor keeps replying. PROMOTE
-    permits only another read-only Hub cycle; RELEASE after READY is the sole
-    transition that permits the same process to start normal dispatch.
+    permits only another read-only Hub cycle. RELEASE after READY permits the
+    same process to start normal dispatch; the watchdog remains fatal until
+    the root supervisor acknowledges ACTIVE with DETACH.
     """
 
     def __init__(self, epoch: str, *, path: str = SOCKET_PATH,
@@ -97,6 +98,8 @@ class ExternalTrialGate:
         self.promotion_requested = threading.Event()
         self.promotion_ready = threading.Event()
         self.released = threading.Event()
+        self.dispatch_ready = threading.Event()
+        self.detached = threading.Event()
         self._transition = threading.Event()
         self._promotion_nonce: str | None = None
 
@@ -104,8 +107,12 @@ class ExternalTrialGate:
         connection = self._connection
         if connection is None:
             raise RuntimeError("External trial gate connection is unavailable")
-        suffix = (f" READY {self._promotion_nonce}"
-                  if self.promotion_ready.is_set() and self._promotion_nonce is not None else "")
+        suffix = ""
+        if self._promotion_nonce is not None:
+            if self.dispatch_ready.is_set():
+                suffix = f" ACTIVE {self._promotion_nonce}"
+            elif self.promotion_ready.is_set():
+                suffix = f" READY {self._promotion_nonce}"
         connection.sendall(f"PING {sequence}{suffix}\n".encode("ascii"))
         expected = f"PONG {sequence}\n".encode("ascii")
         response = _line(connection, time.monotonic() + ROUND_TRIP_SECONDS)
@@ -122,11 +129,21 @@ class ExternalTrialGate:
             self.promotion_requested.set()
             self._transition.set()
             return
-        if command == "RELEASE" and self.promotion_ready.is_set() and nonce == self._promotion_nonce:
+        if (command == "RELEASE" and self.promotion_ready.is_set() and
+                not self.released.is_set() and nonce == self._promotion_nonce):
             connection.sendall(f"ACK RELEASE {nonce}\n".encode("ascii"))
             self.released.set()
             self._transition.set()
+            return
+        if (command == "DETACH" and self.released.is_set() and
+                self.dispatch_ready.is_set() and not self.detached.is_set() and
+                nonce == self._promotion_nonce):
+            connection.sendall(f"ACK DETACH {nonce}\n".encode("ascii"))
+            self.detached.set()
             self._stopping.set()
+            self._transition.set()
+            connection.close()
+            self._connection = None
             return
         raise RuntimeError("External trial gate challenge failed")
 
@@ -136,6 +153,15 @@ class ExternalTrialGate:
                 self.released.is_set() or self._stopping.is_set():
             raise RuntimeError("External trial promotion is unavailable")
         self.promotion_ready.set()
+        self._transition.set()
+
+    def mark_dispatch_ready(self) -> None:
+        """Report that the same process started normal dispatch after RELEASE."""
+        if (not self.released.is_set() or not self.promotion_ready.is_set() or
+                self._promotion_nonce is None or self.detached.is_set() or
+                self._stopping.is_set()):
+            raise RuntimeError("External trial dispatch is unavailable")
+        self.dispatch_ready.set()
         self._transition.set()
 
     def wait(self, timeout: float) -> None:

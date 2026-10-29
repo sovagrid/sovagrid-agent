@@ -81,8 +81,8 @@ def _run(args, *, trial_mode: bool = False, gate=None) -> None:
 
     def start_dispatch() -> None:
         nonlocal checks, dispatch_started, config
-        # This is called only after the Agent has sent ACK RELEASE to the
-        # root supervisor. At that point the new source is durably committed.
+        # In trial mode this runs only after ACK RELEASE, when the new source
+        # is durably committed. The watchdog stays fatal until DETACH.
         prepare_dispatch()
         config = normal_config
         for thread in prepared_threads:
@@ -97,6 +97,7 @@ def _run(args, *, trial_mode: bool = False, gate=None) -> None:
         while True:
             if trial_mode and gate is not None and gate.released.is_set() and not dispatch_started:
                 start_dispatch()
+                gate.mark_dispatch_ready()
             promote_cycle = (trial_mode and gate is not None and
                              gate.promotion_requested.is_set() and
                              not gate.promotion_ready.is_set() and not gate.released.is_set())
