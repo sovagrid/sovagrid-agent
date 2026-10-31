@@ -180,6 +180,7 @@ class AmneziaAgentTests(unittest.TestCase):
                 f"{HELPER} status {target}",
                 f"{HELPER} settings-preview {target}",
                 f"{HELPER} add-profile {target} phone 10.1.2.3 vpn.example.com {PUBLIC} --route split",
+                f"{HELPER} add-profile {target} phone auto vpn.example.com {PUBLIC} --route split",
                 f"{HELPER} sealed-export {target} phone {PUBLIC}",
                 f"{HELPER} revoke {target} phone",
             )
@@ -194,6 +195,7 @@ class AmneziaAgentTests(unittest.TestCase):
             f"{HELPER} settings-preview awg2; id",
             f"{HELPER} status wireguardx", f"{HELPER} enroll wireguard secret",
             f"{HELPER} add-profile awg2 phone 10.1.2.3 vpn.example.com {PUBLIC} --route evil",
+            f"{HELPER} add-profile awg2 phone AUTO vpn.example.com {PUBLIC} --route split",
             f"{HELPER} add-profile wireguard phone 10.1.2.3 vpn.example.com {PUBLIC} --route evil",
             f"{HELPER} add-profile awg2 phone 10.1.2.3 vpn.example.com {PUBLIC} --route full extra",
             f"{HELPER} sealed-export wireguard phone bad", f"echo {HELPER} status awg2",

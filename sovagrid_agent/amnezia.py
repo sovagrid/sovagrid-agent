@@ -122,10 +122,11 @@ def command_argv(command: str) -> list[str] | None:
         return argv
     if action == "add-profile" and len(argv) == 9 and argv[7] == "--route":
         try:
-            address = ipaddress.IPv4Address(argv[4])
+            valid_address = (argv[4] == "auto" or
+                             str(ipaddress.IPv4Address(argv[4])) == argv[4])
         except ipaddress.AddressValueError as exc:
             raise ValueError("Invalid Amnezia address") from exc
-        if (str(address) == argv[4] and _host(argv[5]) and _key(argv[6]) and
+        if (valid_address and _host(argv[5]) and _key(argv[6]) and
                 argv[8] in ("split", "full")):
             return argv
     raise ValueError("Invalid Amnezia broker command")
