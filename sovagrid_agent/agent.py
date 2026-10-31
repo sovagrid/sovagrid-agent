@@ -32,6 +32,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .metrics import collect
+from .vpn_inventory import read_snapshot as read_vpn_inventory
 from .children import reserved as _reserved_children
 from .files import validate_roots
 from .amnezia import HELPER as _AMNEZIA_HELPER, command_argv as _amnezia_command_argv
@@ -643,6 +644,17 @@ class HubClient:
             self._metric_details = frozenset()
         return response
 
+    def push_vpn_inventory(self, snapshot: dict) -> bool:
+        """Refresh one per-server VPN summary; old Hubs safely lack this route."""
+        try:
+            response = self.request("POST", f"/api/v1/servers/{self.server_id}/vpn", snapshot)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            error.close()
+            return False
+        return type(response) is dict and response.get("accepted") is True
+
     def next_job(self) -> dict | None:
         return self.request("GET", f"/api/v1/servers/{self.server_id}/jobs/next")["job"]
 
@@ -870,6 +882,14 @@ def run_once(config: dict, client: HubClient, quiescence: AgentQuiescence | None
                 break
             report["details"].pop(key, None)
     client.push_metrics(report)
+    vpn_snapshot = read_vpn_inventory()
+    if vpn_snapshot is not None:
+        try:
+            client.push_vpn_inventory(vpn_snapshot)
+        except Exception:
+            # VPN inventory is optional telemetry. Its failure cannot suppress
+            # host metrics or leave a fetched command unreported.
+            logging.warning("VPN inventory refresh failed")
     if config.get("allow_remote_commands", False):
         if os.geteuid() == 0:
             raise PermissionError("Agent must run without root privileges when commands are enabled")
